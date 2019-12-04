@@ -30,17 +30,17 @@ typedef struct regex_t
     union data_t
     {
         //! Символ
-        unsigned char symbol;
+        char symbol;
         //! Указатель на символы в квадратных скобках.
-        unsigned char* class_ptr;
+        char* class_ptr;
     }data;
 } regex_t;
 
-int isSpecialSymbol(char symbol);
-int isAlpha(char symbol);
-int isAlphaNumeric(char symbol);
-int isDigit(char symbol);
-int isWhitespace(char symbol);
+bool isSpecialSymbol(char symbol);
+bool isAlpha(char symbol);
+bool isAlphaNumeric(char symbol);
+bool isDigit(char symbol);
+bool isWhitespace(char symbol);
 
 int matchClass(char symbol, const char* text);
 int matchRange(char symbol, const char* text);

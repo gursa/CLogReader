@@ -4,8 +4,7 @@
 
 //! Максимально количество токенов
 #define MAX_TOKENS_COUNT 100
-//! Размер буфера для символов из всех выражений в квадратных скобках
-#define MAX_CLASSES_BUFFER_LEN 40
+
 
 regex::CRegex::CRegex()
     : m_tokens(NULL)
@@ -14,6 +13,7 @@ regex::CRegex::CRegex()
 
 bool regex::CRegex::compile(const char *pattern)
 {
+    /*
     static regex_utility::regex_t tokens_compiled[MAX_TOKENS_COUNT];
     static unsigned char class_buffer[MAX_CLASSES_BUFFER_LEN];
     int class_buffer_index = 1;
@@ -71,6 +71,7 @@ bool regex::CRegex::compile(const char *pattern)
     tokens_compiled[j].type = regex_utility::regex_t::typeUnused;
 
     m_tokens = tokens_compiled;
+    */
     return true;
 }
 
@@ -148,6 +149,7 @@ void regex::CRegex::make_escaped_character_classes(const char *pattern, regex_ut
 
 bool regex::CRegex::make_character_classes(const char *pattern, regex_utility::regex_t *tokens_compiled, int &i, int &j, unsigned char *class_buffer, int &class_buffer_index)
 {
+    /*
     if((pattern == NULL) || (tokens_compiled == NULL) || (class_buffer == NULL))
         return false;
 
@@ -192,6 +194,6 @@ bool regex::CRegex::make_character_classes(const char *pattern, regex_utility::r
     //! Нуль-терминируем
     class_buffer[class_buffer_index++] = 0;
     tokens_compiled[j].data.class_ptr = &class_buffer[buf_begin];
-
+*/
     return true;
 }

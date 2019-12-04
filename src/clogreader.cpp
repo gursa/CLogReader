@@ -1,58 +1,296 @@
 #include "clogreader.h"
-#include <cstring>
-#include <cstdio>
+
+//! Размер буфера для символов из всех выражений в квадратных скобках
+#define MAX_CLASSES_BUFFER_LEN 100
+
 
 CLogReader::CLogReader()
-{
+    : m_tokens(NULL)
+{    
+}
 
+CLogReader::~CLogReader()
+{
+    if(m_tokens)
+        free(m_tokens);
 }
 
 bool CLogReader::SetFilter(const char *filter)
 {
-    char buffer[MAX_PATH];
-    memset(buffer, '\0', MAX_PATH);
+    if(filter == NULL) {
+        fprintf(stderr, "%s(): Error in args! filter = %p", __FUNCTION__, filter);
+        return false;
+    }
 
-    //Предыдущий символ в паттерне
+    size_t length = strlen(filter);
+    char *pattern = (char*) calloc(length+3, sizeof (char));
+    if(pattern == NULL) {
+        fprintf(stderr, "%s(): Cann't allocate memory for pattern!", __FUNCTION__);
+        return false;
+    }
+
+    bool rc = prepare_pattern(filter, length, pattern);
+
+    free(pattern);
+
+    return rc;
+}
+
+bool CLogReader::GetNextLine(char *buf, const int bufsize)
+{
+    int match_idx = search(buf);
+    printf("%40s:\tmatch at idx %d.\n", buf, match_idx);
+}
+
+bool CLogReader::prepare_pattern(const char *filter, const size_t filter_length, char *pattern)
+{
+    if((filter == NULL) || (filter_length == 0) || (pattern == NULL)) {
+        fprintf(stderr, "%s(): Error in args! filter = %p, filter_length = %d, pattern = %p", __FUNCTION__, (void*)filter, filter_length, (void*)pattern);
+        return false;
+    }
+
+    //Предыдущий символ в фильтре
     char c_old = '*';
-    // Текущий символ в паттерне
-    char c;
-    // Индекс в паттерне
-    int i = 0;
-    // Индекс текущего токена
-    int j = 0;
+    // Текущий символ в фильтре
+    char symbol;
+    // Индекс в фильтре
+    size_t i = 0;
+    // Индекс в подготовленном паттерне
+    size_t j = 0;
 
-    while (filter[i] != '\0' && (i < MAX_PATH))
+    while (i < filter_length)
     {
-        c = filter[i];
-        if(c == '*'){
+        symbol = filter[i];
+        if(symbol == '*'){
             if(c_old == '*') {
                 i++;
                 continue;
             }
-            buffer[j] = c;
+            pattern[j] = symbol;
         } else {
-            if(regex_utility::isAlphaNumeric(c) && (i == 0)) {
-                buffer[j] = '^';
+            if(regex_utility::isAlphaNumeric(symbol) && (i == 0)) {
+                pattern[j] = '^';
                 j++;
             }
-            buffer[j] = c;
+            pattern[j] = symbol;
         }
 
 
         i++;
         j++;
-        c_old = c;
+        c_old = symbol;
     }
 
 
-    if(regex_utility::isAlphaNumeric(buffer[j-1]))
-        buffer[j] = '$';
+    if(regex_utility::isAlphaNumeric(pattern[j-1]))
+        pattern[j] = '$';
 
-    return rgx.compile(buffer);
+    return compile_pattern(pattern);
 }
 
-bool CLogReader::GetNextLine(const char *buf, const int bufsize)
+bool CLogReader::compile_pattern(const char *pattern)
 {
-    int match_idx = rgx.search(buf);
-    printf("%40s:\tmatch at idx %d.\n", buf, match_idx);
+    if(pattern == NULL) {
+        fprintf(stderr, "%s(): Error in args! pattern = %p", __FUNCTION__, (void*)pattern);
+        return false;
+    }
+
+    size_t patern_length = strlen(pattern);
+    regex_utility::regex_t *tokens_compiled = (regex_utility::regex_t*) calloc(patern_length+1, sizeof (regex_utility::regex_t));
+    if(tokens_compiled == NULL) {
+        fprintf(stderr, "%s(): Cann't allocate memory for tokens!", __FUNCTION__);
+        return false;
+    }
+
+    static char class_buffer[MAX_CLASSES_BUFFER_LEN];
+    size_t class_buffer_index = 1;
+
+    // Текущий символ в паттерне
+    char c;
+    // Индекс в паттерне
+    size_t i = 0;
+    // Индекс текущего токена
+    size_t j = 0;
+
+    while (pattern[i] != '\0' && (j+1 < patern_length))
+    {
+        c = pattern[i];
+        switch (c)
+        {
+        // Спец. символы
+        case '^':
+            tokens_compiled[j].type = regex_utility::regex_t::typeBegin;
+            break;
+        case '$':
+            tokens_compiled[j].type = regex_utility::regex_t::typeEnd;
+            break;
+        case '.':
+            tokens_compiled[j].type = regex_utility::regex_t::typeDot;
+            break;
+        case '*':
+            tokens_compiled[j].type = regex_utility::regex_t::typeAsterisk;
+            break;
+        case '+':
+            tokens_compiled[j].type = regex_utility::regex_t::typePlus;
+            break;
+        case '?':
+            tokens_compiled[j].type = regex_utility::regex_t::typeQuestion;
+            break;
+        // Экранированные символы-классы (\s \w ...)
+        case '\\':
+            make_escaped_character_classes(pattern, tokens_compiled, i, j);
+            break;
+        // Символы-классы (то что заключено в [])
+        case '[':
+            if(!make_character_classes(pattern, tokens_compiled, i, j, class_buffer, class_buffer_index)) {
+                free(tokens_compiled);
+                return false;
+            }
+            break;
+        // Все остальное
+        default:
+            tokens_compiled[j].type = regex_utility::regex_t::typeChar;
+            tokens_compiled[j].data.symbol = c;
+            break;
+        }
+        i++;
+        j++;
+    }
+    //!* Последнему токену присваеваем тип regex_utility::regex_t::typeUnused - свидетельство окончание паттерна
+    tokens_compiled[j].type = regex_utility::regex_t::typeUnused;
+
+    m_tokens = tokens_compiled;
+    return true;
+}
+
+bool CLogReader::make_escaped_character_classes(const char *pattern, regex_utility::regex_t *tokens_compiled, size_t &i, size_t &j)
+{
+    if((pattern == NULL) || (tokens_compiled == NULL)) {
+        fprintf(stderr, "%s(): Error in args! pattern = %p, tokens_compiled = %p", __FUNCTION__, (void*)pattern, (void*)tokens_compiled);
+        return false;
+    }
+
+    //! Проверяем, не был ли символ '\\' последним в строке. Если это так, то работаем
+    if (pattern[i+1] != '\0')
+    {
+        //! Сам начальный символ escape-последовательности '\\' нам не интересен, сдвигаем индекс по паттерну
+        i++;
+        //! И продолжаем анализ ...
+        switch (pattern[i])
+        {
+        //! Спец. символы
+        case 'd':
+            tokens_compiled[j].type = regex_utility::regex_t::typeDigit;
+            break;
+        case 'D':
+            tokens_compiled[j].type = regex_utility::regex_t::typeNotDigit;
+            break;
+        case 'w':
+            tokens_compiled[j].type = regex_utility::regex_t::typeAlpha;
+            break;
+        case 'W':
+            tokens_compiled[j].type = regex_utility::regex_t::typeNotAlpha;
+            break;
+        case 's':
+            tokens_compiled[j].type = regex_utility::regex_t::typeWhitespace;
+            break;
+        case 'S':
+            tokens_compiled[j].type = regex_utility::regex_t::typeNotWhitespace;
+            break;
+        //! Остальные пойдут как просто текст
+        default:
+            tokens_compiled[j].type = regex_utility::regex_t::typeChar;
+            tokens_compiled[j].data.symbol = pattern[i];
+            break;
+        }
+    }
+    return true;
+}
+
+bool CLogReader::make_character_classes(const char *pattern, regex_utility::regex_t *tokens_compiled, size_t &i, size_t &j, char *class_buffer, size_t &class_buffer_index)
+{
+    if((pattern == NULL) || (tokens_compiled == NULL) || (class_buffer == NULL)) {
+        fprintf(stderr, "%s(): Error in args! pattern = %p, tokens_compiled = %p, class_buffer = %p", __FUNCTION__, (void*)pattern, (void*)tokens_compiled, (void*)class_buffer);
+        return false;
+    }
+
+    //! Запоминаем индекс с началом содержимого внутри кв. скобок
+    size_t buf_begin = class_buffer_index;
+
+    tokens_compiled[j].type = regex_utility::regex_t::typeClass;
+
+    //! Копируем содержимое внутри скобок. Закрывающую ] коипровать не будем.
+    while ((pattern[++i] != ']') && (pattern[i]   != '\0'))
+    {
+        //! Если вдруг встретили спецсимвол, то опускаем его.
+        if (pattern[i] == '\\')
+        {
+            //! Если стартовый индекс вышел за пределы допустимого выходим с ошибкой
+            if (class_buffer_index >= MAX_CLASSES_BUFFER_LEN - 1)
+            {
+                fprintf(stderr, "Error! Overflow of the internal buffer! The maximum index of a special character is %d, current index is %d\n", MAX_CLASSES_BUFFER_LEN - 2, class_buffer_index);
+                fprintf(stderr, "pattern = '%s'\n", pattern);
+                return false;
+            }
+            //! Если переполнения нет, то копируем символ
+            class_buffer[class_buffer_index++] = pattern[i++];
+        }
+        else if (class_buffer_index >= MAX_CLASSES_BUFFER_LEN) //! Если стартовый индекс вышел за пределы допустимого выходим с ошибкой
+        {
+            fprintf(stderr, "Error! Overflow of the internal buffer! The maximum index of a character is %d, current index is %d\n", MAX_CLASSES_BUFFER_LEN-1, class_buffer_index);
+            fprintf(stderr, "pattern = '%s'\n", pattern);
+            return false;
+        }
+        //! Если переполнения нет, то копируем символ
+        class_buffer[class_buffer_index++] = pattern[i];
+    }
+    //! Если стартовый индекс вышел за пределы допустимого выходим с ошибкой
+    //! Отлавливаем случаи подобные [01234567890123456789012345678901234567][
+    if (class_buffer_index >= MAX_CLASSES_BUFFER_LEN)
+    {
+        fprintf(stderr, "Error! Overflow of the internal buffer! The maximum index of a character is %d, current index is %d\n", MAX_CLASSES_BUFFER_LEN-1, class_buffer_index);
+        fprintf(stderr, "pattern = '%s'\n", pattern);
+        return false;
+    }
+    //! Нуль-терминируем
+    class_buffer[class_buffer_index++] = 0;
+    tokens_compiled[j].data.class_ptr = &class_buffer[buf_begin];
+
+    return true;
+}
+
+bool CLogReader::search(const char *text, int found)
+{
+    //! Поиск будем производить только если у нас есть токены и текст
+    if ((m_tokens != NULL) || (text != NULL))
+    {
+        //! Если мы работаем с жесткой привязкой к началу строки паттерна
+        if (m_tokens[0].type == regex_utility::regex_t::typeBegin)
+        {
+            return ((matchPattern(&m_tokens[1], text)) ? 0 : -1);
+        }
+        else //! Если начальная позиция вхождения нам не важна
+        {
+            //! На всякий случай инициализируем индекс, с которого начинается вхождение найденного паттерна, ошибочным значением -1
+            found = -1;
+            //! Крутим цикл до тех пор пока не встретим символ нуль-терминации
+            do
+            {
+                found++;
+
+                if (matchPattern(m_tokens, text))
+                {
+                    //! Если первый же символ в строке нулевой у нас проблема, выходим с ошибкой
+                    if (text[0] == '\0') {
+                        found = -1;
+                        return false;
+                    }
+                    //! Если же все ОК
+                    return true;
+                }
+            }
+            while (*text++ != '\0');
+        }
+    }
+    return false;
 }

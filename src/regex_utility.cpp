@@ -1,16 +1,16 @@
 #include "regex_utility.h"
 
-int regex_utility::isSpecialSymbol(char symbol)
+bool regex_utility::isSpecialSymbol(char symbol)
 {
     return ((symbol == 's') || (symbol == 'S') || (symbol == 'w') || (symbol == 'W') || (symbol == 'd') || (symbol == 'D'));
 }
 
-int regex_utility::isAlpha(char symbol)
+bool regex_utility::isAlpha(char symbol)
 {
     return ((symbol >= 'a') && (symbol <= 'z')) || ((symbol >= 'A') && (symbol <= 'Z'));
 }
 
-int regex_utility::isAlphaNumeric(char symbol)
+bool regex_utility::isAlphaNumeric(char symbol)
 {
     return ((symbol == '_') || isAlpha(symbol) || isDigit(symbol));
 }
@@ -45,7 +45,7 @@ int regex_utility::matchClass(char symbol, const char *text)
     return 0;
 }
 
-int regex_utility::isDigit(char symbol)
+bool regex_utility::isDigit(char symbol)
 {
     return ((symbol >= '0') && (symbol <= '9'));
 }
@@ -147,7 +147,7 @@ int regex_utility::matchAsterisk(regex_t token_item, regex_t *tokens, const char
     return 0;
 }
 
-int regex_utility::isWhitespace(char symbol)
+bool regex_utility::isWhitespace(char symbol)
 {
     return ((symbol == ' ') || (symbol == '\t') || (symbol == '\n') || (symbol == '\r') || (symbol == '\f') || (symbol == '\v'));
 }
