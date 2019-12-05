@@ -25,7 +25,7 @@ int regex_utility::matchClass(char symbol, const char *text)
         }
         else if (text[0] == '\\')
         {
-            // РќР°С€Р»Рё РЅР°С‡Р°Р»Рѕ СЃРїРµС†. СЃРёРјРІРѕР»Р°. РЎРґРІРёРіР°РµРјСЃСЏ РїРѕ СЃС‚СЂРѕРєРµ Рё СЃСЂР°РІРЅРёРІР°РµРј СЃР»РµРґСѓСЋС‰РёР№ СЃРёРјРІРѕР».
+            // Нашли начало спец. символа. Сдвигаемся по строке и сравниваем следующий символ.
             text += 1;
             if (matchSpecialSymbol(symbol, text))
                 return 1;
@@ -137,8 +137,7 @@ int regex_utility::matchRange(char symbol, const char *text)
 
 int regex_utility::matchAsterisk(regex_t token_item, regex_t *tokens, const char *text)
 {
-    do
-    {
+    do {
         if (matchPattern(tokens, text))
             return 1;
     }

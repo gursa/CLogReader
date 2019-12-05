@@ -1,18 +1,38 @@
 #include "clogreader.h"
 
-//! Р Р°Р·РјРµСЂ Р±СѓС„РµСЂР° РґР»СЏ СЃРёРјРІРѕР»РѕРІ РёР· РІСЃРµС… РІС‹СЂР°Р¶РµРЅРёР№ РІ РєРІР°РґСЂР°С‚РЅС‹С… СЃРєРѕР±РєР°С…
-#define MAX_CLASSES_BUFFER_LEN 100
-
-
 CLogReader::CLogReader()
-    : m_tokens(NULL)
+    : m_tokens(NULL), m_file(NULL), m_strnum(0)
 {    
 }
 
 CLogReader::~CLogReader()
 {
-    if(m_tokens)
+    Close();
+
+    if(m_tokens != NULL)
         free(m_tokens);
+}
+
+bool CLogReader::Open(const char *filename)
+{
+    if(filename == NULL) {
+        fprintf(stderr, "%s(): Error in args! filename = %p", __FUNCTION__, filename);
+        return false;
+    }
+
+    m_file = fopen(filename, "r");
+    if (!m_file) {
+        fprintf(stderr, "Unable to open file %s", filename);
+        return false;
+    }
+
+    return true;
+}
+
+void CLogReader::Close()
+{
+    if(m_file != NULL)
+        fclose(m_file);
 }
 
 bool CLogReader::SetFilter(const char *filter)
@@ -38,24 +58,57 @@ bool CLogReader::SetFilter(const char *filter)
 
 bool CLogReader::GetNextLine(char *buf, const int bufsize)
 {
-    int match_idx = search(buf);
-    printf("%40s:\tmatch at idx %d.\n", buf, match_idx);
+    if((buf == NULL) || (bufsize <= 0)) {
+        fprintf(stderr, "%s(): Error in args! buf = %p, bufsize = %d", __FUNCTION__, buf, bufsize);
+        return false;
+    }
+
+    memset(buf, '\0', bufsize);
+
+    if(m_file == NULL) {
+        fprintf(stderr, "%s(): The file is not open!", __FUNCTION__);
+        return false;
+    }
+
+    int found = -1;
+
+    while(!feof(m_file)) {
+        if(fgets(buf, bufsize, m_file) == NULL) {
+            if(ferror(m_file)) {
+                fprintf(stderr, "%s(): File read error caught!", __FUNCTION__);
+                clearerr(m_file);
+                Close();
+                return false;
+            }
+
+        }
+        m_strnum++;
+        found = -1;
+        if(search(buf, found)) {
+            fprintf(stdout, "Match %06zu\n", m_strnum);
+            return true;
+        }
+
+    }
+
+    fprintf(stderr, "%s(): Caught the end of the file!\n", __FUNCTION__);
+    return false;
 }
 
 bool CLogReader::prepare_pattern(const char *filter, const size_t filter_length, char *pattern)
 {
     if((filter == NULL) || (filter_length == 0) || (pattern == NULL)) {
-        fprintf(stderr, "%s(): Error in args! filter = %p, filter_length = %d, pattern = %p", __FUNCTION__, (void*)filter, filter_length, (void*)pattern);
+        fprintf(stderr, "%s(): Error in args! filter = %p, filter_length = %zu, pattern = %p", __FUNCTION__, (void*)filter, filter_length, (void*)pattern);
         return false;
     }
 
-    //РџСЂРµРґС‹РґСѓС‰РёР№ СЃРёРјРІРѕР» РІ С„РёР»СЊС‚СЂРµ
+    //Предыдущий символ в фильтре
     char c_old = '*';
-    // РўРµРєСѓС‰РёР№ СЃРёРјРІРѕР» РІ С„РёР»СЊС‚СЂРµ
+    // Текущий символ в фильтре
     char symbol;
-    // РРЅРґРµРєСЃ РІ С„РёР»СЊС‚СЂРµ
+    // Индекс в фильтре
     size_t i = 0;
-    // РРЅРґРµРєСЃ РІ РїРѕРґРіРѕС‚РѕРІР»РµРЅРЅРѕРј РїР°С‚С‚РµСЂРЅРµ
+    // Индекс в подготовленном паттерне
     size_t j = 0;
 
     while (i < filter_length)
@@ -105,11 +158,11 @@ bool CLogReader::compile_pattern(const char *pattern)
     static char class_buffer[MAX_CLASSES_BUFFER_LEN];
     size_t class_buffer_index = 1;
 
-    // РўРµРєСѓС‰РёР№ СЃРёРјРІРѕР» РІ РїР°С‚С‚РµСЂРЅРµ
+    // Текущий символ в паттерне
     char c;
-    // РРЅРґРµРєСЃ РІ РїР°С‚С‚РµСЂРЅРµ
+    // Индекс в паттерне
     size_t i = 0;
-    // РРЅРґРµРєСЃ С‚РµРєСѓС‰РµРіРѕ С‚РѕРєРµРЅР°
+    // Индекс текущего токена
     size_t j = 0;
 
     while (pattern[i] != '\0' && (j+1 < patern_length))
@@ -117,7 +170,7 @@ bool CLogReader::compile_pattern(const char *pattern)
         c = pattern[i];
         switch (c)
         {
-        // РЎРїРµС†. СЃРёРјРІРѕР»С‹
+        // Спец. символы
         case '^':
             tokens_compiled[j].type = regex_utility::regex_t::typeBegin;
             break;
@@ -136,18 +189,18 @@ bool CLogReader::compile_pattern(const char *pattern)
         case '?':
             tokens_compiled[j].type = regex_utility::regex_t::typeQuestion;
             break;
-        // Р­РєСЂР°РЅРёСЂРѕРІР°РЅРЅС‹Рµ СЃРёРјРІРѕР»С‹-РєР»Р°СЃСЃС‹ (\s \w ...)
+        // Экранированные символы-классы (\s \w ...)
         case '\\':
             make_escaped_character_classes(pattern, tokens_compiled, i, j);
             break;
-        // РЎРёРјРІРѕР»С‹-РєР»Р°СЃСЃС‹ (С‚Рѕ С‡С‚Рѕ Р·Р°РєР»СЋС‡РµРЅРѕ РІ [])
+        // Символы-классы (то что заключено в [])
         case '[':
             if(!make_character_classes(pattern, tokens_compiled, i, j, class_buffer, class_buffer_index)) {
                 free(tokens_compiled);
                 return false;
             }
             break;
-        // Р’СЃРµ РѕСЃС‚Р°Р»СЊРЅРѕРµ
+        // Все остальное
         default:
             tokens_compiled[j].type = regex_utility::regex_t::typeChar;
             tokens_compiled[j].data.symbol = c;
@@ -156,7 +209,7 @@ bool CLogReader::compile_pattern(const char *pattern)
         i++;
         j++;
     }
-    //!* РџРѕСЃР»РµРґРЅРµРјСѓ С‚РѕРєРµРЅСѓ РїСЂРёСЃРІР°РµРІР°РµРј С‚РёРї regex_utility::regex_t::typeUnused - СЃРІРёРґРµС‚РµР»СЊСЃС‚РІРѕ РѕРєРѕРЅС‡Р°РЅРёРµ РїР°С‚С‚РµСЂРЅР°
+    //!* Последнему токену присваеваем тип regex_utility::regex_t::typeUnused - свидетельство окончание паттерна
     tokens_compiled[j].type = regex_utility::regex_t::typeUnused;
 
     m_tokens = tokens_compiled;
@@ -170,15 +223,15 @@ bool CLogReader::make_escaped_character_classes(const char *pattern, regex_utili
         return false;
     }
 
-    //! РџСЂРѕРІРµСЂСЏРµРј, РЅРµ Р±С‹Р» Р»Рё СЃРёРјРІРѕР» '\\' РїРѕСЃР»РµРґРЅРёРј РІ СЃС‚СЂРѕРєРµ. Р•СЃР»Рё СЌС‚Рѕ С‚Р°Рє, С‚Рѕ СЂР°Р±РѕС‚Р°РµРј
+    // Проверяем, не был ли символ '\\' последним в строке. Если это так, то работаем
     if (pattern[i+1] != '\0')
     {
-        //! РЎР°Рј РЅР°С‡Р°Р»СЊРЅС‹Р№ СЃРёРјРІРѕР» escape-РїРѕСЃР»РµРґРѕРІР°С‚РµР»СЊРЅРѕСЃС‚Рё '\\' РЅР°Рј РЅРµ РёРЅС‚РµСЂРµСЃРµРЅ, СЃРґРІРёРіР°РµРј РёРЅРґРµРєСЃ РїРѕ РїР°С‚С‚РµСЂРЅСѓ
+        // Сам начальный символ escape-последовательности '\\' нам не интересен, сдвигаем индекс по паттерну
         i++;
-        //! Р РїСЂРѕРґРѕР»Р¶Р°РµРј Р°РЅР°Р»РёР· ...
+        // И продолжаем анализ ...
         switch (pattern[i])
         {
-        //! РЎРїРµС†. СЃРёРјРІРѕР»С‹
+        // Спец. символы
         case 'd':
             tokens_compiled[j].type = regex_utility::regex_t::typeDigit;
             break;
@@ -197,7 +250,7 @@ bool CLogReader::make_escaped_character_classes(const char *pattern, regex_utili
         case 'S':
             tokens_compiled[j].type = regex_utility::regex_t::typeNotWhitespace;
             break;
-        //! РћСЃС‚Р°Р»СЊРЅС‹Рµ РїРѕР№РґСѓС‚ РєР°Рє РїСЂРѕСЃС‚Рѕ С‚РµРєСЃС‚
+        // Остальные пойдут как просто текст
         default:
             tokens_compiled[j].type = regex_utility::regex_t::typeChar;
             tokens_compiled[j].data.symbol = pattern[i];
@@ -214,78 +267,78 @@ bool CLogReader::make_character_classes(const char *pattern, regex_utility::rege
         return false;
     }
 
-    //! Р—Р°РїРѕРјРёРЅР°РµРј РёРЅРґРµРєСЃ СЃ РЅР°С‡Р°Р»РѕРј СЃРѕРґРµСЂР¶РёРјРѕРіРѕ РІРЅСѓС‚СЂРё РєРІ. СЃРєРѕР±РѕРє
+    // Запоминаем индекс с началом содержимого внутри кв. скобок
     size_t buf_begin = class_buffer_index;
 
     tokens_compiled[j].type = regex_utility::regex_t::typeClass;
 
-    //! РљРѕРїРёСЂСѓРµРј СЃРѕРґРµСЂР¶РёРјРѕРµ РІРЅСѓС‚СЂРё СЃРєРѕР±РѕРє. Р—Р°РєСЂС‹РІР°СЋС‰СѓСЋ ] РєРѕРёРїСЂРѕРІР°С‚СЊ РЅРµ Р±СѓРґРµРј.
+    // Копируем содержимое внутри скобок. Закрывающую ] коипровать не будем.
     while ((pattern[++i] != ']') && (pattern[i]   != '\0'))
     {
-        //! Р•СЃР»Рё РІРґСЂСѓРі РІСЃС‚СЂРµС‚РёР»Рё СЃРїРµС†СЃРёРјРІРѕР», С‚Рѕ РѕРїСѓСЃРєР°РµРј РµРіРѕ.
+        // Если вдруг встретили спецсимвол, то опускаем его.
         if (pattern[i] == '\\')
         {
-            //! Р•СЃР»Рё СЃС‚Р°СЂС‚РѕРІС‹Р№ РёРЅРґРµРєСЃ РІС‹С€РµР» Р·Р° РїСЂРµРґРµР»С‹ РґРѕРїСѓСЃС‚РёРјРѕРіРѕ РІС‹С…РѕРґРёРј СЃ РѕС€РёР±РєРѕР№
+            // Если стартовый индекс вышел за пределы допустимого выходим с ошибкой
             if (class_buffer_index >= MAX_CLASSES_BUFFER_LEN - 1)
             {
-                fprintf(stderr, "Error! Overflow of the internal buffer! The maximum index of a special character is %d, current index is %d\n", MAX_CLASSES_BUFFER_LEN - 2, class_buffer_index);
+                fprintf(stderr, "Error! Overflow of the internal buffer! The maximum index of a special character is %d, current index is %zu\n", MAX_CLASSES_BUFFER_LEN - 2, class_buffer_index);
                 fprintf(stderr, "pattern = '%s'\n", pattern);
                 return false;
             }
-            //! Р•СЃР»Рё РїРµСЂРµРїРѕР»РЅРµРЅРёСЏ РЅРµС‚, С‚Рѕ РєРѕРїРёСЂСѓРµРј СЃРёРјРІРѕР»
+            // Если переполнения нет, то копируем символ
             class_buffer[class_buffer_index++] = pattern[i++];
         }
-        else if (class_buffer_index >= MAX_CLASSES_BUFFER_LEN) //! Р•СЃР»Рё СЃС‚Р°СЂС‚РѕРІС‹Р№ РёРЅРґРµРєСЃ РІС‹С€РµР» Р·Р° РїСЂРµРґРµР»С‹ РґРѕРїСѓСЃС‚РёРјРѕРіРѕ РІС‹С…РѕРґРёРј СЃ РѕС€РёР±РєРѕР№
+        else if (class_buffer_index >= MAX_CLASSES_BUFFER_LEN) //! Если стартовый индекс вышел за пределы допустимого выходим с ошибкой
         {
-            fprintf(stderr, "Error! Overflow of the internal buffer! The maximum index of a character is %d, current index is %d\n", MAX_CLASSES_BUFFER_LEN-1, class_buffer_index);
+            fprintf(stderr, "Error! Overflow of the internal buffer! The maximum index of a character is %d, current index is %zu\n", MAX_CLASSES_BUFFER_LEN-1, class_buffer_index);
             fprintf(stderr, "pattern = '%s'\n", pattern);
             return false;
         }
-        //! Р•СЃР»Рё РїРµСЂРµРїРѕР»РЅРµРЅРёСЏ РЅРµС‚, С‚Рѕ РєРѕРїРёСЂСѓРµРј СЃРёРјРІРѕР»
+        // Если переполнения нет, то копируем символ
         class_buffer[class_buffer_index++] = pattern[i];
     }
-    //! Р•СЃР»Рё СЃС‚Р°СЂС‚РѕРІС‹Р№ РёРЅРґРµРєСЃ РІС‹С€РµР» Р·Р° РїСЂРµРґРµР»С‹ РґРѕРїСѓСЃС‚РёРјРѕРіРѕ РІС‹С…РѕРґРёРј СЃ РѕС€РёР±РєРѕР№
-    //! РћС‚Р»Р°РІР»РёРІР°РµРј СЃР»СѓС‡Р°Рё РїРѕРґРѕР±РЅС‹Рµ [01234567890123456789012345678901234567][
+    // Если стартовый индекс вышел за пределы допустимого выходим с ошибкой
+    // Отлавливаем случаи подобные [01234567890123456789012345678901234567][
     if (class_buffer_index >= MAX_CLASSES_BUFFER_LEN)
     {
-        fprintf(stderr, "Error! Overflow of the internal buffer! The maximum index of a character is %d, current index is %d\n", MAX_CLASSES_BUFFER_LEN-1, class_buffer_index);
+        fprintf(stderr, "Error! Overflow of the internal buffer! The maximum index of a character is %d, current index is %zu\n", MAX_CLASSES_BUFFER_LEN-1, class_buffer_index);
         fprintf(stderr, "pattern = '%s'\n", pattern);
         return false;
     }
-    //! РќСѓР»СЊ-С‚РµСЂРјРёРЅРёСЂСѓРµРј
+    // Нуль-терминируем
     class_buffer[class_buffer_index++] = 0;
     tokens_compiled[j].data.class_ptr = &class_buffer[buf_begin];
 
     return true;
 }
 
-bool CLogReader::search(const char *text, int found)
+bool CLogReader::search(const char *text, int &found)
 {
-    //! РџРѕРёСЃРє Р±СѓРґРµРј РїСЂРѕРёР·РІРѕРґРёС‚СЊ С‚РѕР»СЊРєРѕ РµСЃР»Рё Сѓ РЅР°СЃ РµСЃС‚СЊ С‚РѕРєРµРЅС‹ Рё С‚РµРєСЃС‚
+    // Поиск будем производить только если у нас есть токены и текст
     if ((m_tokens != NULL) || (text != NULL))
     {
-        //! Р•СЃР»Рё РјС‹ СЂР°Р±РѕС‚Р°РµРј СЃ Р¶РµСЃС‚РєРѕР№ РїСЂРёРІСЏР·РєРѕР№ Рє РЅР°С‡Р°Р»Сѓ СЃС‚СЂРѕРєРё РїР°С‚С‚РµСЂРЅР°
+        // Если мы работаем с жесткой привязкой к началу строки паттерна
         if (m_tokens[0].type == regex_utility::regex_t::typeBegin)
         {
             return ((matchPattern(&m_tokens[1], text)) ? 0 : -1);
         }
-        else //! Р•СЃР»Рё РЅР°С‡Р°Р»СЊРЅР°СЏ РїРѕР·РёС†РёСЏ РІС…РѕР¶РґРµРЅРёСЏ РЅР°Рј РЅРµ РІР°Р¶РЅР°
+        else // Если начальная позиция вхождения нам не важна
         {
-            //! РќР° РІСЃСЏРєРёР№ СЃР»СѓС‡Р°Р№ РёРЅРёС†РёР°Р»РёР·РёСЂСѓРµРј РёРЅРґРµРєСЃ, СЃ РєРѕС‚РѕСЂРѕРіРѕ РЅР°С‡РёРЅР°РµС‚СЃСЏ РІС…РѕР¶РґРµРЅРёРµ РЅР°Р№РґРµРЅРЅРѕРіРѕ РїР°С‚С‚РµСЂРЅР°, РѕС€РёР±РѕС‡РЅС‹Рј Р·РЅР°С‡РµРЅРёРµРј -1
+            // На всякий случай инициализируем индекс, с которого начинается вхождение найденного паттерна, ошибочным значением -1
             found = -1;
-            //! РљСЂСѓС‚РёРј С†РёРєР» РґРѕ С‚РµС… РїРѕСЂ РїРѕРєР° РЅРµ РІСЃС‚СЂРµС‚РёРј СЃРёРјРІРѕР» РЅСѓР»СЊ-С‚РµСЂРјРёРЅР°С†РёРё
+            // Крутим цикл до тех пор пока не встретим символ нуль-терминации
             do
             {
                 found++;
 
                 if (matchPattern(m_tokens, text))
                 {
-                    //! Р•СЃР»Рё РїРµСЂРІС‹Р№ Р¶Рµ СЃРёРјРІРѕР» РІ СЃС‚СЂРѕРєРµ РЅСѓР»РµРІРѕР№ Сѓ РЅР°СЃ РїСЂРѕР±Р»РµРјР°, РІС‹С…РѕРґРёРј СЃ РѕС€РёР±РєРѕР№
+                    // Если первый же символ в строке нулевой у нас проблема, выходим с ошибкой
                     if (text[0] == '\0') {
                         found = -1;
                         return false;
                     }
-                    //! Р•СЃР»Рё Р¶Рµ РІСЃРµ РћРљ
+                    // Если же все ОК
                     return true;
                 }
             }
