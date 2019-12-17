@@ -1,349 +1,398 @@
+
 #include "clogreader.h"
 
-CLogReader::CLogReader()
-    : m_tokens(NULL), m_file(NULL), m_strnum(0)
-{    
+CLogReader::CLogReader(bool isCaseSensitive)
+    : 	m_fileMapping(NULL),
+        m_mapingRegion(NULL),
+        m_regionOffset(0),
+        m_regionSize(0),
+        m_searchFilter( NULL ),
+        m_caseSensitive(isCaseSensitive)
+{
+    GetSystemInfo(&m_systemInfo);
+	m_fileSize.QuadPart = 0;
+    m_fileTail.QuadPart = 0;
+    m_fileOffset.QuadPart = 0;
 }
 
-CLogReader::~CLogReader()
+CLogReader::~CLogReader(void)
 {
     Close();
-
-    if(m_tokens != NULL)
-        free(m_tokens);
 }
 
 bool CLogReader::Open(const char *filename)
 {
-    if(filename == NULL) {
-        fprintf(stderr, "%s(): Error in args! filename = %p", __FUNCTION__, filename);
+    Close();
+
+    if(NULL == filename){
+        fprintf(stderr, "\n[ERROR] %s(): Error in args! filename = %p\n", __FUNCTION__, filename);
         return false;
     }
 
-    m_file = fopen(filename, "r");
-    if (!m_file) {
-        fprintf(stderr, "Unable to open file %s", filename);
+    HANDLE fileLog = ::CreateFileA(
+        filename,
+        GENERIC_READ,
+        FILE_SHARE_READ,
+        NULL,
+        OPEN_EXISTING,
+        FILE_FLAG_SEQUENTIAL_SCAN,
+        NULL);
+    if(INVALID_HANDLE_VALUE == fileLog) {
+        ErrorMsg("::CreateFile");
         return false;
     }
 
+    DWORD fileSizeHigh = 0;
+    m_fileSize.LowPart = ::GetFileSize(fileLog, &fileSizeHigh);
+    m_fileSize.HighPart = (LONG)fileSizeHigh;
+    if(INVALID_FILE_SIZE == m_fileSize.LowPart) {
+        ErrorMsg("::GetFileSize");
+        m_fileSize.QuadPart = 0;
+        return false;
+    }
+
+	m_fileTail.QuadPart = m_fileSize.QuadPart;
+
+    m_fileMapping = ::CreateFileMapping(
+        fileLog,
+        NULL,
+        PAGE_READONLY,
+        0,
+        0,
+        NULL);
+
+    if(0 == ::CloseHandle(fileLog)) {
+        ErrorMsg("::CloseHandle");
+    }
+
+    if(NULL == m_fileMapping) {
+        ErrorMsg("::CreateFileMapping");
+        m_fileTail.QuadPart = 0;
+        return false;
+    }
     return true;
 }
 
 void CLogReader::Close()
 {
-    if(m_file != NULL)
-        fclose(m_file);
+    if(m_searchFilter)
+        free(m_searchFilter);
+    m_searchFilter = NULL;
+
+    UnmappingRegion();
+
+    if(m_fileMapping && (0 == ::CloseHandle(m_fileMapping))) {
+        ErrorMsg("::CloseHandle");
+    }
+    m_fileMapping = NULL;
 }
 
 bool CLogReader::SetFilter(const char *filter)
 {
-    if(filter == NULL) {
-        fprintf(stderr, "%s(): Error in args! filter = %p", __FUNCTION__, filter);
+    size_t filterLength = strnlen_s( filter, MAX_FILTER_SIZE );
+    if(0 == filterLength)
         return false;
+    m_searchFilter = (char*) malloc( filterLength + 1 );
+    if(NULL == m_searchFilter)
+        return false;
+    if (0 != strcpy_s( m_searchFilter, filterLength + 1, filter )) {
+        Close();
+		return false;
     }
 
-    size_t length = strlen(filter);
-    char *pattern = (char*) calloc(length+3, sizeof (char));
-    if(pattern == NULL) {
-        fprintf(stderr, "%s(): Cann't allocate memory for pattern!", __FUNCTION__);
-        return false;
+	bool vw = false;
+    for (char *ps(m_searchFilter), *pd(m_searchFilter);;)
+	{
+		bool w(false);
+		while (*ps == '*')
+		{
+			w = true;
+			*pd = *ps;
+			++ps;
+		}
+		if (!w)
+		{
+			*pd = *ps;
+			if (*ps == '\0')
+                break;
+			++ps;
+		}
+		else
+		{
+			vw = true;
+		}
+		++pd;
     }
 
-    bool rc = prepare_pattern(filter, length, pattern);
-
-    free(pattern);
-
-    return rc;
+    return true;
 }
 
 bool CLogReader::GetNextLine(char *buf, const int bufsize)
 {
-    if((buf == NULL) || (bufsize <= 0)) {
-        fprintf(stderr, "%s(): Error in args! buf = %p, bufsize = %d", __FUNCTION__, buf, bufsize);
-        return false;
-    }
-
-    memset(buf, '\0', bufsize);
-
-    if(m_file == NULL) {
-        fprintf(stderr, "%s(): The file is not open!", __FUNCTION__);
+    if(NULL == buf || (bufsize <= 0)) {
+        fprintf(stderr, "\n[ERROR] %s(): Error in args! buf = %p, bufferSize = %d\n", __FUNCTION__, (void*)buf, bufsize);
         return false;
     }
 
     int found = -1;
+    while(1) {
+        // РџРѕР»СѓС‡Р°РµРј СЃС‚СЂРѕРєСѓ РёР· СЃРјР°РїРёСЂРѕРІР°РЅРЅРѕРіРѕ С„Р°Р№Р»Р°
+        if(false == GetString(buf, bufsize))
+            break;
 
-    while(!feof(m_file)) {
-        if(fgets(buf, bufsize, m_file) == NULL) {
-            if(ferror(m_file)) {
-                fprintf(stderr, "%s(): File read error caught!", __FUNCTION__);
-                clearerr(m_file);
-                Close();
-                return false;
-            }
-
-        }
-        m_strnum++;
-        found = -1;
-        if(search(buf, found)) {
-            fprintf(stdout, "Match %06zu\n", m_strnum);
+        if(Match( buf, m_searchFilter, m_caseSensitive ))
             return true;
-        }
-
     }
-
-    fprintf(stderr, "%s(): Caught the end of the file!\n", __FUNCTION__);
     return false;
 }
 
-bool CLogReader::prepare_pattern(const char *filter, const size_t filter_length, char *pattern)
+bool CLogReader::IsUndefined(char symbol)
 {
-    if((filter == NULL) || (filter_length == 0) || (pattern == NULL)) {
-        fprintf(stderr, "%s(): Error in args! filter = %p, filter_length = %zu, pattern = %p", __FUNCTION__, (void*)filter, filter_length, (void*)pattern);
-        return false;
-    }
+    return symbol == '?';
+}
 
-    //Предыдущий символ в фильтре
-    char c_old = '*';
-    // Текущий символ в фильтре
-    char symbol;
-    // Индекс в фильтре
-    size_t i = 0;
-    // Индекс в подготовленном паттерне
-    size_t j = 0;
+bool CLogReader::IsEqual(char lSymbol, char rSymbol)
+{
+    return lSymbol == rSymbol || IsUndefined(rSymbol);
+}
 
-    while (i < filter_length)
+bool CLogReader::Match(char * __restrict text, char * __restrict filter, bool bCaseSensitive, char cAltTerminator)
+{
+    bool matchResult = true;
+    char* afterLastFilter = NULL;
+    char* afterLastText = NULL;
+    char symbolText;
+    char symbolFilter;
+
+    while( 1 )
     {
-        symbol = filter[i];
-        if(symbol == '*'){
-            if(c_old == '*') {
-                i++;
+        symbolText = *text;
+        symbolFilter = *filter;
+
+        if( !symbolText || symbolText == cAltTerminator )
+        {
+            if( !symbolFilter || symbolFilter == cAltTerminator )
+            {
+                break;
+            }
+            else if( symbolFilter == '*' )
+            {
+                filter++;
                 continue;
             }
-            pattern[j] = symbol;
-        } else {
-            if(regex_utility::isAlphaNumeric(symbol) && (i == 0)) {
-                pattern[j] = '^';
-                j++;
-            }
-            pattern[j] = symbol;
-        }
 
-
-        i++;
-        j++;
-        c_old = symbol;
-    }
-
-
-    if(regex_utility::isAlphaNumeric(pattern[j-1]))
-        pattern[j] = '$';
-
-    return compile_pattern(pattern);
-}
-
-bool CLogReader::compile_pattern(const char *pattern)
-{
-    if(pattern == NULL) {
-        fprintf(stderr, "%s(): Error in args! pattern = %p", __FUNCTION__, (void*)pattern);
-        return false;
-    }
-
-    size_t patern_length = strlen(pattern);
-    regex_utility::regex_t *tokens_compiled = (regex_utility::regex_t*) calloc(patern_length+1, sizeof (regex_utility::regex_t));
-    if(tokens_compiled == NULL) {
-        fprintf(stderr, "%s(): Cann't allocate memory for tokens!", __FUNCTION__);
-        return false;
-    }
-
-    static char class_buffer[MAX_CLASSES_BUFFER_LEN];
-    size_t class_buffer_index = 1;
-
-    // Текущий символ в паттерне
-    char c;
-    // Индекс в паттерне
-    size_t i = 0;
-    // Индекс текущего токена
-    size_t j = 0;
-
-    while (pattern[i] != '\0' && (j+1 < patern_length))
-    {
-        c = pattern[i];
-        switch (c)
-        {
-        // Спец. символы
-        case '^':
-            tokens_compiled[j].type = regex_utility::regex_t::typeBegin;
-            break;
-        case '$':
-            tokens_compiled[j].type = regex_utility::regex_t::typeEnd;
-            break;
-        case '.':
-            tokens_compiled[j].type = regex_utility::regex_t::typeDot;
-            break;
-        case '*':
-            tokens_compiled[j].type = regex_utility::regex_t::typeAsterisk;
-            break;
-        case '+':
-            tokens_compiled[j].type = regex_utility::regex_t::typePlus;
-            break;
-        case '?':
-            tokens_compiled[j].type = regex_utility::regex_t::typeQuestion;
-            break;
-        // Экранированные символы-классы (\s \w ...)
-        case '\\':
-            make_escaped_character_classes(pattern, tokens_compiled, i, j);
-            break;
-        // Символы-классы (то что заключено в [])
-        case '[':
-            if(!make_character_classes(pattern, tokens_compiled, i, j, class_buffer, class_buffer_index)) {
-                free(tokens_compiled);
-                return false;
-            }
-            break;
-        // Все остальное
-        default:
-            tokens_compiled[j].type = regex_utility::regex_t::typeChar;
-            tokens_compiled[j].data.symbol = c;
-            break;
-        }
-        i++;
-        j++;
-    }
-    //!* Последнему токену присваеваем тип regex_utility::regex_t::typeUnused - свидетельство окончание паттерна
-    tokens_compiled[j].type = regex_utility::regex_t::typeUnused;
-
-    m_tokens = tokens_compiled;
-    return true;
-}
-
-bool CLogReader::make_escaped_character_classes(const char *pattern, regex_utility::regex_t *tokens_compiled, size_t &i, size_t &j)
-{
-    if((pattern == NULL) || (tokens_compiled == NULL)) {
-        fprintf(stderr, "%s(): Error in args! pattern = %p, tokens_compiled = %p", __FUNCTION__, (void*)pattern, (void*)tokens_compiled);
-        return false;
-    }
-
-    // Проверяем, не был ли символ '\\' последним в строке. Если это так, то работаем
-    if (pattern[i+1] != '\0')
-    {
-        // Сам начальный символ escape-последовательности '\\' нам не интересен, сдвигаем индекс по паттерну
-        i++;
-        // И продолжаем анализ ...
-        switch (pattern[i])
-        {
-        // Спец. символы
-        case 'd':
-            tokens_compiled[j].type = regex_utility::regex_t::typeDigit;
-            break;
-        case 'D':
-            tokens_compiled[j].type = regex_utility::regex_t::typeNotDigit;
-            break;
-        case 'w':
-            tokens_compiled[j].type = regex_utility::regex_t::typeAlpha;
-            break;
-        case 'W':
-            tokens_compiled[j].type = regex_utility::regex_t::typeNotAlpha;
-            break;
-        case 's':
-            tokens_compiled[j].type = regex_utility::regex_t::typeWhitespace;
-            break;
-        case 'S':
-            tokens_compiled[j].type = regex_utility::regex_t::typeNotWhitespace;
-            break;
-        // Остальные пойдут как просто текст
-        default:
-            tokens_compiled[j].type = regex_utility::regex_t::typeChar;
-            tokens_compiled[j].data.symbol = pattern[i];
-            break;
-        }
-    }
-    return true;
-}
-
-bool CLogReader::make_character_classes(const char *pattern, regex_utility::regex_t *tokens_compiled, size_t &i, size_t &j, char *class_buffer, size_t &class_buffer_index)
-{
-    if((pattern == NULL) || (tokens_compiled == NULL) || (class_buffer == NULL)) {
-        fprintf(stderr, "%s(): Error in args! pattern = %p, tokens_compiled = %p, class_buffer = %p", __FUNCTION__, (void*)pattern, (void*)tokens_compiled, (void*)class_buffer);
-        return false;
-    }
-
-    // Запоминаем индекс с началом содержимого внутри кв. скобок
-    size_t buf_begin = class_buffer_index;
-
-    tokens_compiled[j].type = regex_utility::regex_t::typeClass;
-
-    // Копируем содержимое внутри скобок. Закрывающую ] коипровать не будем.
-    while ((pattern[++i] != ']') && (pattern[i]   != '\0'))
-    {
-        // Если вдруг встретили спецсимвол, то опускаем его.
-        if (pattern[i] == '\\')
-        {
-            // Если стартовый индекс вышел за пределы допустимого выходим с ошибкой
-            if (class_buffer_index >= MAX_CLASSES_BUFFER_LEN - 1)
+            else if( afterLastText )
             {
-                fprintf(stderr, "Error! Overflow of the internal buffer! The maximum index of a special character is %d, current index is %zu\n", MAX_CLASSES_BUFFER_LEN - 2, class_buffer_index);
-                fprintf(stderr, "pattern = '%s'\n", pattern);
-                return false;
-            }
-            // Если переполнения нет, то копируем символ
-            class_buffer[class_buffer_index++] = pattern[i++];
-        }
-        else if (class_buffer_index >= MAX_CLASSES_BUFFER_LEN) //! Если стартовый индекс вышел за пределы допустимого выходим с ошибкой
-        {
-            fprintf(stderr, "Error! Overflow of the internal buffer! The maximum index of a character is %d, current index is %zu\n", MAX_CLASSES_BUFFER_LEN-1, class_buffer_index);
-            fprintf(stderr, "pattern = '%s'\n", pattern);
-            return false;
-        }
-        // Если переполнения нет, то копируем символ
-        class_buffer[class_buffer_index++] = pattern[i];
-    }
-    // Если стартовый индекс вышел за пределы допустимого выходим с ошибкой
-    // Отлавливаем случаи подобные [01234567890123456789012345678901234567][
-    if (class_buffer_index >= MAX_CLASSES_BUFFER_LEN)
-    {
-        fprintf(stderr, "Error! Overflow of the internal buffer! The maximum index of a character is %d, current index is %zu\n", MAX_CLASSES_BUFFER_LEN-1, class_buffer_index);
-        fprintf(stderr, "pattern = '%s'\n", pattern);
-        return false;
-    }
-    // Нуль-терминируем
-    class_buffer[class_buffer_index++] = 0;
-    tokens_compiled[j].data.class_ptr = &class_buffer[buf_begin];
-
-    return true;
-}
-
-bool CLogReader::search(const char *text, int &found)
-{
-    // Поиск будем производить только если у нас есть токены и текст
-    if ((m_tokens != NULL) || (text != NULL))
-    {
-        // Если мы работаем с жесткой привязкой к началу строки паттерна
-        if (m_tokens[0].type == regex_utility::regex_t::typeBegin)
-        {
-            return ((matchPattern(&m_tokens[1], text)) ? 0 : -1);
-        }
-        else // Если начальная позиция вхождения нам не важна
-        {
-            // На всякий случай инициализируем индекс, с которого начинается вхождение найденного паттерна, ошибочным значением -1
-            found = -1;
-            // Крутим цикл до тех пор пока не встретим символ нуль-терминации
-            do
-            {
-                found++;
-
-                if (matchPattern(m_tokens, text))
+                if( !( *afterLastText ) || *afterLastText == cAltTerminator )
                 {
-                    // Если первый же символ в строке нулевой у нас проблема, выходим с ошибкой
-                    if (text[0] == '\0') {
-                        found = -1;
-                        return false;
+                    matchResult = false;
+                    break;
+                }
+
+                text = afterLastText++;
+                filter = afterLastFilter;
+                continue;
+            }
+
+            matchResult = false;
+            break;
+        }
+        else
+        {
+            if( !bCaseSensitive )
+            {
+                if (symbolText >= 'A' && symbolText <= 'Z')
+                    symbolText += ('a' - 'A');
+
+                if (symbolFilter >= 'A' && symbolFilter <= 'Z')
+                    symbolFilter += ('a' - 'A');
+            }
+
+            if( !IsEqual(symbolText, symbolFilter) )
+            {
+                if( symbolFilter == '*' )
+                {
+                    afterLastFilter = ++filter;
+                    afterLastText = text;
+                    symbolFilter = *filter;
+
+                    if( !symbolFilter || symbolFilter == cAltTerminator )
+                        break;
+                    continue;
+                }
+                else if ( afterLastFilter )
+                {
+                    if( afterLastFilter != filter )
+                    {
+                        filter = afterLastFilter;
+                        symbolFilter = *filter;
+
+                        if( !bCaseSensitive && symbolFilter >= 'A' && symbolFilter <= 'Z' )
+                            symbolFilter += ('a' - 'A');
+
+                        if( IsEqual(symbolText, symbolFilter) )
+                            filter++;
                     }
-                    // Если же все ОК
-                    return true;
+                    text++;
+                    continue;
+                }
+                else
+                {
+                    matchResult = false;
+                    break;
                 }
             }
-            while (*text++ != '\0');
         }
+        text++;
+        filter++;
+    }
+    return matchResult;
+}
+
+bool CLogReader::MappingNextRegion()
+{
+	double percentComplete = (double)m_fileOffset.QuadPart / (double)m_fileSize.QuadPart * 100.0;
+	fprintf(stdout, "File processing: %3.3f %%\r", percentComplete);
+    if(!m_fileMapping)
+        return false;
+
+    // Р’С‹С‡РёСЃР»СЏРµРј СЃРєРѕР»СЊРєРѕ Р±Р°Р№С‚ РЅСѓР¶РЅРѕ СЃРјР°РїРёСЂРѕРІР°С‚СЊ
+    m_regionSize = (m_fileTail.QuadPart < m_systemInfo.dwAllocationGranularity) ?
+                m_fileTail.LowPart :
+                m_systemInfo.dwAllocationGranularity;
+    if(m_regionSize == 0)
+        return false;
+
+    m_mapingRegion = (char*)MapViewOfFile(
+                m_fileMapping,
+                FILE_MAP_READ,
+                (DWORD)m_fileOffset.HighPart, // РІ С„Р°Р№Р»Рµ
+                m_fileOffset.LowPart, // РЅР°С‡Р°Р»СЊРЅС‹Р№ Р±Р°Р№С‚
+                m_regionSize); // С‡РёСЃР»Рѕ РїСЂРѕРµС†РёСЂСѓРµРјС‹С… Р±Р°Р№С‚
+
+    if(NULL == m_mapingRegion) {
+        ErrorMsg("::MapViewOfFile");
+        Close();
+        return false;
+    }
+
+    return true;
+}
+
+bool CLogReader::UnmappingRegion()
+{
+    // РЈРІРµР»РёС‡РёРІР°РµРј СЃРјРµС‰РµРЅРёРµ РјР°РїРёСЂРѕРІР°РЅРёРµ, Р° СЃС‡РµС‚С‡РёРє РЅРµРѕР±СЂР°Р±РѕС‚Р°РЅРЅС‹С… Р±Р°Р№С‚ РЅР°РѕР±РѕСЂРѕС‚ СѓРјРµРЅСЊС€Р°РµРј РЅР° СЂР°Р·РјРµСЂ СЂРµРіРёРѕРЅР°
+    m_fileOffset.QuadPart += m_regionSize;
+    m_fileTail.QuadPart -= m_regionSize;
+
+    // РћСЃРІРѕР±РѕР¶РґР°РµРїРј СЂРµРіРёРѕРЅ
+    if(m_mapingRegion && (0 == ::UnmapViewOfFile(m_mapingRegion))) {
+        ErrorMsg("::UnmapViewOfFile");
+        return false;
+    }
+    m_mapingRegion = NULL;
+    return true;
+}
+
+bool CLogReader::AddSymbolToBuffer(char *buffer, const int bufferSize, int &bufferIndex)
+{
+    if(NULL == buffer || (bufferSize <= 0)) {
+        fprintf(stderr, "\n[ERROR] %s(): Error in args! buffer = %p, bufferSize = %d\n", __FUNCTION__, (void*)buffer, bufferSize);
+        return false;
+    }
+
+    // Р‘РµР¶РёРј РїРѕ СЂРµРіРёРѕРЅСѓ, РЅР°С‡РёРЅР°СЏ СЃРѕ СЃРјРµС‰РµРЅРёСЏ
+    for(DWORD i = m_regionOffset; i < m_regionSize; ++i) {
+        // РћРїСѓСЃРєР°РµРј СЃРёРјРІРѕР» РІРѕР·РІСЂР°С‚Р° РєР°СЂРµС‚РєРё, РµСЃР»Рё С‚Р°РєРѕРІРѕР№ РёРјРµРµС‚СЃСЏ
+        if('\r' == m_mapingRegion[i])
+            continue;
+        // Р•СЃР»Рё РЅР°С€Р»Рё СЃРёРјРІРѕР» РїРµСЂРµРЅРѕСЃР° СЃС‚СЂРѕРєРё, С‚Рѕ РІС‹С…РѕРґРёРј
+        if('\n' == m_mapingRegion[i]) {
+            m_fileLine[bufferIndex] = '\0';
+            m_regionOffset = i+1;
+            CopyMemory(buffer, m_fileLine, min(bufferIndex+1, bufferSize));
+            return true;
+        }
+        // Р’СЃРµ РѕСЃС‚Р°Р»СЊРЅС‹Рµ СЃРёРјРІРѕР»С‹ РґРѕР±Р°РІР»СЏРµРј РІ СЃС‚СЂРѕРєСѓ
+        m_fileLine[bufferIndex] = m_mapingRegion[i];
+        bufferIndex++;
     }
     return false;
+}
+
+bool CLogReader::GetString(char *buffer, const int bufferSize)
+{
+    if(NULL == buffer || (bufferSize <= 0)) {
+        fprintf(stderr, "\n[ERROR] %s(): Error in args! buffer = %p, bufferSize = %d\n", __FUNCTION__, (void*)buffer, bufferSize);
+        return false;
+    }
+    SecureZeroMemory(buffer, bufferSize*sizeof (char));
+    SecureZeroMemory(m_fileLine, sizeof (m_fileLine));
+
+    // Р•СЃР»Рё РјР°РїРёСЂРѕРІР°РЅРёРµ С„Р°Р№Р»Р° РµС‰Рµ РЅРµ РїСЂРѕРёР·РІРѕРґРёР»РѕСЃСЊ, С‚Рѕ СЃРµР№С‡Р°СЃ СЃР°РјРѕРµ РІСЂРµРјСЏ
+    if(NULL == m_mapingRegion) {
+        if(false == MappingNextRegion()) {
+            return false;
+        }
+        m_regionOffset = 0;
+    }
+
+    int add_index = 0;
+    // РџСЂРѕР±РµР¶РёРјСЃСЏ РїРѕ СЂРµРіРёРѕРЅСѓ Рё РЅР°Р№РґРµРј СЃС‚СЂРѕРєСѓ
+    if(true == AddSymbolToBuffer(buffer, bufferSize, add_index)) {
+        return true;
+    }
+
+    // Р•СЃР»Рё РЅР°Р№С‚Рё СЃС‚СЂРѕРєСѓ РІ РїРµСЂРІРѕРј РєСѓСЃРєРµ РЅРµ РїРѕР»СѓС‡РёР»РѕСЃСЊ, РѕСЃРІРѕР±РѕРґРёРј СЂРµРіРёРѕРЅ
+    if(false == UnmappingRegion()) {
+        SecureZeroMemory(buffer, bufferSize*sizeof (char));
+        return false;
+    }
+
+    // РЎРјР°РїРёСЂСѓРµРј РµС‰Рµ РєСѓСЃРѕС‡РµРє
+    if(false == MappingNextRegion()) {
+        SecureZeroMemory(buffer, bufferSize*sizeof (char));
+        return false;
+    }
+
+    m_regionOffset = 0;
+    // Р РїСЂРѕР№РґРµРјСЃСЏ РїРѕ РЅРµРјСѓ
+    if(true == AddSymbolToBuffer(buffer, bufferSize, add_index)) {
+        return true;
+    }
+
+    // Р•СЃР»Рё РІ Рё РІРѕ РІС‚РѕСЂРѕР№ СЂР°Р· РЅР° РЅРµ РїРѕРїР°Р»СЃСЏ СЃРёРјРІРѕР» РїРµСЂРµРЅРѕСЃР° СЃС‚СЂРѕРєРё, Сѓ РЅР°СЃ РїСЂРѕР±Р»РµРјР°. Р’С‹С…РѕРґРёРј СЃ РѕС€РёР±РєРѕР№
+    if(false == UnmappingRegion()) {
+        return false;
+    }
+
+    return false;
+}
+
+void CLogReader::ErrorMsg(const char *functionName)
+{
+    if(NULL == functionName) {
+        fprintf(stderr, "\n[ERROR] %s(): Error in args! functionName = %p\n", __FUNCTION__, (void*)functionName);
+        return;
+    }
+
+    // РџРѕР»СѓС‡РµРЅРёРµ РѕРїРёСЃР°РЅРёСЏ РїРѕСЃР»РµРґРЅРµР№ РѕС€РёР±РєРё РїРѕ РµРµ РєРѕРґСѓ
+    LPSTR messageBuffer;
+    DWORD errorCode = GetLastError();
+
+    if(!FormatMessageA(
+                FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                NULL,
+                errorCode,
+                MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
+                (LPSTR) &messageBuffer,
+                0,
+                NULL )) {
+        fprintf(stderr, "\n[ERROR] %s() failed with error %lu\n", functionName, errorCode);
+        fprintf(stderr, "[ERROR] %s() failed with error %lu\n", "FormatMessageA", GetLastError());
+    } else {
+        fprintf(stderr, "\n[ERROR] %s() failed with error %lu: %s\n", functionName, errorCode, messageBuffer);
+    }
+
+    LocalFree(messageBuffer);
 }
