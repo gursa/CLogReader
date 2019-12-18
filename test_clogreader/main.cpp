@@ -1,6 +1,5 @@
 #include <clogreader.h>
-
-using namespace std;
+#include <cstdio>
 
 int main(int argc, char *argv[])
 {	
