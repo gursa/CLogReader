@@ -17,6 +17,6 @@
 
 Для прогона тестов можно запустить приложение: 
 ```
-test_clogreader.exe "..\\logs\\dnf.librepo.log" "\*updates-modular-783da5de2e38c644\*"
+test_clogreader.exe "..\\logs\\dnf.librepo.log" "*updates-modular-783da5de2e38c644*"
 ```
 где первый параметр - файл лога, а второй фильтр для поиска.
