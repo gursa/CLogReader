@@ -16,8 +16,10 @@ CRegex::~CRegex()
 
 bool CRegex::SetFilter(const char *filter)
 {
-    if(NULL == filter)
+    if(NULL == filter){
+        fprintf(stderr, "\n[ERROR] %s(): Error in args! filter = %p\n", __FUNCTION__, (void*)filter);
         return false;
+    }
 
     size_t filterLength = strnlen_s( filter, MAX_FILTER_SIZE );
     if(0 == filterLength)
@@ -74,8 +76,10 @@ bool CRegex::GetCaseSensitive() const
 
 bool CRegex::Match(char * __restrict text, CRegex& regex, char altTerminator)
 {
-    if(NULL == text)
+    if(NULL == text){
+        fprintf(stderr, "\n[ERROR] %s(): Error in args! text = %p\n", __FUNCTION__, (void*)text);
         return false;
+    }
 
     bool matchResult = true;
     char* afterLastFilter = NULL;

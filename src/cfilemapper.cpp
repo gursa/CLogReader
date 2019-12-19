@@ -15,13 +15,13 @@ CFileMapper::CFileMapper()
 
 CFileMapper::~CFileMapper()
 {
-    Close();
+    DestroyMappingObj();
 }
 
 bool CFileMapper::CreateMappingObj(const char *fileName)
 {
     if(NULL == fileName){
-        fprintf(stderr, "\n[ERROR] CFileMapper::%s(): Error in args! fileName = %p\n", __FUNCTION__, (void*)fileName);
+        fprintf(stderr, "\n[ERROR] %s(): Error in args! fileName = %p\n", __FUNCTION__, (void*)fileName);
         return false;
     }
 
@@ -44,7 +44,7 @@ bool CFileMapper::CreateMappingObj(const char *fileName)
 
 
     if(NULL == m_fileMapping) {
-        ErrorMsg("CFileMapper", __FUNCTION__, "::CreateFileMapping");
+        ErrorMsg(__FUNCTION__, "::CreateFileMapping");
         DestroyMappingObj();
         return false;
     }
@@ -58,7 +58,7 @@ bool CFileMapper::DestroyMappingObj()
     UnmappingRegion();
 
     if(m_fileMapping && (0 == ::CloseHandle(m_fileMapping))) {
-        ErrorMsg("CFileMapper", __FUNCTION__, "::CloseHandle");
+        ErrorMsg(__FUNCTION__, "::CloseHandle");
     }
     m_fileMapping = NULL;
 
@@ -137,7 +137,7 @@ bool CFileMapper::MappingNextRegion()
                 m_regionSize); // число проецируемых байт
 
     if(NULL == m_mapingRegion) {
-        ErrorMsg("CFileMapper", __FUNCTION__, "::MapViewOfFile");
+        ErrorMsg(__FUNCTION__, "::MapViewOfFile");
         Close();
         return false;
     }
@@ -153,7 +153,7 @@ bool CFileMapper::UnmappingRegion()
 
     // Освобождаепм регион
     if(m_mapingRegion && (0 == ::UnmapViewOfFile(m_mapingRegion))) {
-        ErrorMsg("CFileMapper", __FUNCTION__, "::UnmapViewOfFile");
+        ErrorMsg(__FUNCTION__, "::UnmapViewOfFile");
         return false;
     }
     m_mapingRegion = NULL;

@@ -2,11 +2,11 @@
 
 #include <cstdio>
 
-void ErrorMsg(const char *className, const char *methodName, const char *functionName)
+void ErrorMsg(const char *methodName, const char *functionName)
 {
-    if((NULL == className) && (NULL == functionName)) {
-        fprintf(stderr, "\n[ERROR] %s(): Error in args! className = %p, methodName = %p, functionName = %p\n",
-                __FUNCTION__, (void*)className, (void*)methodName, (void*)functionName);
+    if((NULL == methodName) && (NULL == functionName)) {
+        fprintf(stderr, "\n[ERROR] %s(): Error in args! methodName = %p, functionName = %p\n",
+                __FUNCTION__, (void*)methodName, (void*)functionName);
         return;
     }
 
@@ -48,7 +48,7 @@ CFile::~CFile()
 bool CFile::Open(const char *fileName)
 {
     if(NULL == fileName){
-        fprintf(stderr, "\n[ERROR] CFile::%s(): Error in args! fileName = %p\n", __FUNCTION__, (void*)fileName);
+        fprintf(stderr, "\n[ERROR] %s(): Error in args! fileName = %p\n", __FUNCTION__, (void*)fileName);
         return false;
     }
 
@@ -64,7 +64,7 @@ bool CFile::Open(const char *fileName)
             FILE_FLAG_SEQUENTIAL_SCAN,
             NULL);
     if(INVALID_HANDLE_VALUE == m_fileHandle) {
-        ErrorMsg("CFile", __FUNCTION__, "::CreateFile");
+        ErrorMsg(__FUNCTION__, "::CreateFile");
         return false;
     }
 
@@ -72,7 +72,7 @@ bool CFile::Open(const char *fileName)
     m_fileSize.LowPart = ::GetFileSize(m_fileHandle, &fileSizeHigh);
     m_fileSize.HighPart = (LONG)fileSizeHigh;
     if(INVALID_FILE_SIZE == m_fileSize.LowPart) {
-        ErrorMsg("CFile", __FUNCTION__, "::GetFileSize");
+        ErrorMsg(__FUNCTION__, "::GetFileSize");
         Close();
         return false;
     }
@@ -88,7 +88,7 @@ bool CFile::Close()
 
     if(INVALID_HANDLE_VALUE != m_fileHandle) {
         if(0 == ::CloseHandle(m_fileHandle)) {
-            ErrorMsg("CFile", __FUNCTION__, "::CloseHandle");
+            ErrorMsg(__FUNCTION__, "::CloseHandle");
             return false;
         }
     }
