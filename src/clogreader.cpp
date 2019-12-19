@@ -15,7 +15,7 @@ CLogReader::~CLogReader(void)
 bool CLogReader::Open(const char *filename)
 {
     if(NULL == filename){
-        fprintf(stderr, "\n[ERROR] %s(): Error in args! filename = %p\n", __FUNCTION__, filename);
+        fprintf(stderr, "\n[ERROR] %s(): Error in args! filename = %p\n", __FUNCTION__, (void*)filename);
         return false;
     }
 
@@ -35,6 +35,12 @@ void CLogReader::Close()
 
 bool CLogReader::SetFilter(const char *filter)
 {
+    if(NULL == filter){
+        fprintf(stderr, "\n[ERROR] %s(): Error in args! filter = %p\n", __FUNCTION__, (void*)filter);
+        Close();
+        return false;
+    }
+
     if(false == m_regex.SetFilter(filter)) {
         Close();
         return false;
