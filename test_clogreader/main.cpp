@@ -1,5 +1,5 @@
-#include <clogreader.h>
 #include <cstdio>
+#include "../src/clogreader.h"
 
 int main(int argc, char *argv[])
 {	
@@ -35,8 +35,8 @@ int main(int argc, char *argv[])
     }
     cl.Close();
 
-	fprintf(stdout, "\nFile processing is complete! Duration: %lu ms\n", GetTickCount()-startTime);
+    fprintf(stdout, "\nFile processing is complete! Duration: %lu ms\n", GetTickCount()-startTime);
 
-    system("pause");
+    //system("pause");
     return 0;
 }
