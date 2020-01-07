@@ -36,7 +36,7 @@ void ErrorMsg(const char *methodName, const char *functionName)
 }
 
 CLogReader::CLogReader()
-    : m_fileMapping( INVALID_HANDLE_VALUE ),
+    : m_fileMapping( NULL ),
       m_searchFilter( NULL ),
       m_buffer( NULL ),
       m_fileOffset( 0L ),
