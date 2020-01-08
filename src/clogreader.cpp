@@ -41,8 +41,14 @@ CLogReader::CLogReader()
       m_buffer( NULL ),
       m_fileOffset( 0L ),
       m_mapingRegion( NULL ),
-      m_startPattern( NULL ),
-      m_endPattern( NULL )
+	  m_startPattern( NULL ),
+      m_endPattern( NULL ),
+	  m_stringOffset( 0 ),
+	  m_bufferPosition( 1 ),
+	  m_stringPosition( 0 ),
+	  m_mapDelta( 0 ),
+	  m_mapRegionSize( 0 ),
+	  m_availableBytes( 0 )
 {
     SYSTEM_INFO systemInfo;
     GetSystemInfo( &systemInfo );
@@ -107,14 +113,13 @@ bool CLogReader::Open( const char* fileName )
 
 void CLogReader::Close()
 {
-    while( m_startPattern != NULL ) {
+	while( m_startPattern != NULL ) {
         CPatternNode *tmp = m_startPattern->nextNode;
         free(m_startPattern);
         m_startPattern = NULL;
         m_startPattern = tmp;
     }
     m_endPattern = NULL;
-
     // Освобождаем регион
     if( m_buffer && !::UnmapViewOfFile(m_buffer) ) {
         ErrorMsg(__FUNCTION__, "::UnmapViewOfFile");
@@ -132,11 +137,11 @@ bool CLogReader::SetFilter( const char* filter )
     if(!filter) {
         fprintf(stderr, "\n[ERROR] %s(): Error in args! filter = %p\n", __FUNCTION__, (void*)filter);
         Close();
-        return false;
+		return false;
     }
 
-    char buffer[2048];
-    size_t bufferPosition = 0;
+	char buffer[2048];
+    size_t m_bufferPosition = 0;
     char prevFilterSymbol = '\0';
     char nextFilterSymbol = filter[0];
     bool isLeftAnchor = true; // данный флаг показывает, есть ли у нас привязка к началу строки
@@ -149,9 +154,9 @@ bool CLogReader::SetFilter( const char* filter )
         if((nextFilterSymbol == '?') || (nextFilterSymbol == '*'))
         {
             // проверяем, не было ли перед ними текста, если есть, то добавим сначала узел с текстом
-            if(bufferPosition) {
-                buffer[bufferPosition] = '\0';
-                bufferPosition = 0;
+            if(m_bufferPosition) {
+                buffer[m_bufferPosition] = '\0';
+                m_bufferPosition = 0;
                 AddNode(typeText, buffer, strlen(buffer), isLeftAnchor, false);
                 isLeftAnchor = false;
             }
@@ -162,7 +167,7 @@ bool CLogReader::SetFilter( const char* filter )
                 AddNode(typeQuestion, "?", strlen("?"), isLeftAnchor, isRightAnchor);
                 // Флаги isLeftAnchor и isRightAnchor имеют смысл только для текста.
                 //Если попался хоть один спецсимвол, то уже точно нам это становится не важным для последующих узлов
-                isLeftAnchor = false;
+                isLeftAnchor = true;
             }
             else
             {
@@ -177,55 +182,54 @@ bool CLogReader::SetFilter( const char* filter )
         else
         {
             // Если не спецсимволы, то накапливаем текст
-            buffer[bufferPosition] = nextFilterSymbol;
-            bufferPosition++;
+            buffer[m_bufferPosition] = nextFilterSymbol;
+            m_bufferPosition++;
         }
         prevFilterSymbol = nextFilterSymbol;
     }
 
     // Если по завершении цикла у нас еще остался необработанный текст, то дообрабатываем его
-    if(bufferPosition) {
-        buffer[bufferPosition] = '\0';
-        bufferPosition = 0;
+    if(m_bufferPosition) {
+        buffer[m_bufferPosition] = '\0';
+        m_bufferPosition = 0;
         AddNode(typeText, buffer, strlen(buffer), isLeftAnchor, true);
         isLeftAnchor = false;
     }
-    return true;
+
+	return true;
 }
 
 bool CLogReader::GetNextLine( char* buf, const int bufsize )
 {
     if(NULL == buf || (bufsize <= 0)) {
-        fprintf(stderr, "\n[ERROR] %s(): Error in args! buf = %p, bufferSize = %d\n", __FUNCTION__, (void*)buf, bufsize);
+        fprintf(stderr, "\n[ERROR] %s(): Error in args! buf = %p, bufsize = %d\n", __FUNCTION__, (void*)buf, bufsize);
         return false;
     }
 
-    LARGE_INTEGER mapOffset;
-    mapOffset.QuadPart = 0;
-    LARGE_INTEGER mapSize;
-    mapSize.QuadPart = 0;
-    DWORD bufferPosition = 1;
-    int bufPos = 0;
-    LONGLONG mapDelta = 0;
-    LONGLONG bufferSize = 0;
-    LONGLONG available = 0;
+    m_mapOffset.QuadPart = 0;
+    m_mapSize.QuadPart = 0;
+    m_bufferPosition = 1;
+    m_stringPosition = 0;
+    m_mapDelta = 0;
+    m_mapRegionSize = 0;
+    m_availableBytes = 0;
     buf[0] = '\0';
 
     // Начинаем ...
     do
     {
-        if( bufferPosition >= available )
+        if( m_bufferPosition >= m_availableBytes )
         {
             // Определение кол-ва байт для чтения. Изначально предполагаем, что читать будем погранулярно
-            bufferSize = m_systemGran;
+            m_mapRegionSize = m_systemGran;
             // Но если вдруг окажется, что осталось прочитать менее гранулярности, то прочитаем сколько осталось
             if( m_fileSize.QuadPart - m_fileOffset < m_systemGran )
-                bufferSize = m_fileSize.QuadPart - m_fileOffset;
+                m_mapRegionSize = m_fileSize.QuadPart - m_fileOffset;
 
             // Расчитываем смещение в файле
-            mapOffset.QuadPart = (m_fileOffset / m_systemGran) * m_systemGran;
+            m_mapOffset.QuadPart = (m_fileOffset / m_systemGran) * m_systemGran;
             // И точно кол-во считываемых байт
-            mapSize.QuadPart = (m_fileOffset % m_systemGran) + bufferSize;
+            m_mapSize.QuadPart = (m_fileOffset % m_systemGran) + m_mapRegionSize;
             // Во избежании задвоения региона, проверим и, при необходимости, зачистим его
             if( m_mapingRegion )
                 UnmapViewOfFile( m_mapingRegion );
@@ -234,9 +238,9 @@ bool CLogReader::GetNextLine( char* buf, const int bufsize )
             m_mapingRegion = (char*) ::MapViewOfFile(
                         m_fileMapping,
                         FILE_MAP_READ,
-                        mapOffset.HighPart, // смещение
-                        mapOffset.LowPart, // смещение
-                        mapSize.LowPart); // кол-во байт
+                        m_mapOffset.HighPart, // смещение
+                        m_mapOffset.LowPart, // смещение
+                        m_mapSize.LowPart); // кол-во байт
             if( !m_mapingRegion ) {
                 ErrorMsg(__FUNCTION__, "::MapViewOfFile");
                 Close();
@@ -244,54 +248,50 @@ bool CLogReader::GetNextLine( char* buf, const int bufsize )
             }
 
             // Определяемся откуда будем продолжать анализ
-            mapDelta = m_fileOffset - mapOffset.QuadPart;
-            m_buffer = (char*) m_mapingRegion + mapDelta;
-            bufferPosition = 0;
-            available = bufferSize;
-            m_fileOffset += bufferSize;
+            m_mapDelta = m_fileOffset - m_mapOffset.QuadPart;
+            m_buffer = (char*) m_mapingRegion + m_mapDelta;
+            m_bufferPosition = 0;
+            m_availableBytes = m_mapRegionSize;
+            m_fileOffset += m_mapRegionSize;
         }
 
         // Если мы повстречали символы переноса строк, то мы нашли строку для анализа
-        if( m_buffer[bufferPosition] == '\r' || m_buffer[bufferPosition] == '\n' )
-        {
+        if( m_buffer[m_bufferPosition] == '\r' || m_buffer[m_bufferPosition] == '\n' )
+        {			
             // Проверяем, подходит ли она нам
-            if(Match(buf, m_startPattern))
-            {                
-                m_fileOffset = m_fileOffset - bufferSize + bufferPosition + 1;
+            if(Match(buf, m_stringPosition, m_stringOffset, m_startPattern))
+			//if(m_regex.Match(buf))
+            {
+				m_fileOffset = m_fileOffset - m_mapRegionSize + m_bufferPosition + 1;
                 return true;
             }
 			
-            bufPos = 0;
-            buf[bufPos] = '\0';
+            m_stringPosition = 0;
+            buf[m_stringPosition] = '\0';
         }
         else // в остальных случаях накапливаем буффер
         {
             // но если вдруг мы вышли за границы разрешенного, то выходим с ошибкой
-            if( bufPos >= bufsize - 1 )
+            if( m_stringPosition >= bufsize - 1 )
             {
-                buf[bufPos] = '\0';
+                buf[m_stringPosition] = '\0';
                 return false;
             }
 
-            buf[bufPos] = m_buffer[bufferPosition];
-            ++bufPos;
-            buf[bufPos] = '\0';
+            buf[m_stringPosition] = m_buffer[m_bufferPosition];
+            ++m_stringPosition;
+            buf[m_stringPosition] = '\0';
         }
 
-        ++bufferPosition;
-    } while( available > 0 );
+        ++m_bufferPosition;
+    } while( m_availableBytes > 0 );
 
     return false;
 }
 
-bool CLogReader::IsEqual(char lSymbol, char rSymbol)
-{
-    return (lSymbol == rSymbol) || (rSymbol == '?');
-}
-
 void CLogReader::AddNode(type_t type, const char *data, const size_t dataSize, const bool isLeftAnchor, const bool isRightAnchor)
 {
-    // Добавляем очередной узел в односвязный список. Думаю, комменты излишни ...
+	// Добавляем очередной узел в односвязный список. Думаю, комменты излишни ...
     // malloc выбран в силу того, что он точно не бросит исключение ...
     CPatternNode *tempNode = (CPatternNode*) malloc( sizeof(CPatternNode) );
     tempNode->type = type;
@@ -313,37 +313,36 @@ void CLogReader::AddNode(type_t type, const char *data, const size_t dataSize, c
     }
 }
 
-bool CLogReader::Match(char *string, CPatternNode *compiledPattern)
+bool CLogReader::Match(char *string, const int &string_length, size_t &offset, CPatternNode *itemPattern)
 {
-    CPatternNode *itemPattern = compiledPattern;
-    size_t length = strlen(string);
-    size_t i = 0;
+	offset = 0;
+	char *find = NULL;
     while(itemPattern != NULL) {
         // Если повстречали '*' - то работаем дальше, за исключением случая, когда узел последний
         if(itemPattern->type == typeAsterics) {
             itemPattern = itemPattern->nextNode;
-            if(!itemPattern)
-                return true;
+			if(!itemPattern) {
+				return true;
+			}
             continue;
         } else if(itemPattern->type == typeQuestion) { // Если '?' - проверям что у нас нет выхода за границу
-            i++;
-            if((i > length) || (itemPattern->isRightAnchor && (i != length)))
+            offset++;
+            if((offset > string_length) || (itemPattern->isRightAnchor && (offset != string_length)))
                 return false;
-            string++;
         } else { // если же у нас текст
             // то ищем его в строке
-            char *find = strstr(string, itemPattern->data);
+			find = strstr(string + offset, itemPattern->data);
             if(find == NULL)
-                return false;
+                return false;            
 
-            // Проверяем, где он находится в строке (соответствует ли он флагам)
-            i=(find-string) + itemPattern->dataSize;
-
-            if(itemPattern->isLeftAnchor && (find != string)) {
+            if(itemPattern->isLeftAnchor && (find != string + offset)) {
                 return false;
             }
 
-            if(itemPattern->isRightAnchor && (i != length)) {
+			// Проверяем, где он находится в строке (соответствует ли он флагам)
+            offset=(find-string) + itemPattern->dataSize;
+
+            if(itemPattern->isRightAnchor && (offset != string_length)) {
                 return false;
             }
         }

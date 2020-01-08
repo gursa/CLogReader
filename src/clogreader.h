@@ -74,17 +74,16 @@ public:
      * и последующего сравнение с фильтром.
      */
     bool GetNextLine( char* buf, const int bufsize );
-
 private:
-    /*!
-     * \brief Проверка на равенство двух символов, а также на то, что rSymbol не является '?'
-     * \param lSymbol Левый проверяемый символ, эталон при сравнении
-     * \param rSymbol Проверяемый символ
-     * \return true если lSymbol == rSymbol или rSymbol является '?'
+	/*!
+     * \brief Функция проверки принадлежности строки поисковому паттерну
+     * \param string Проверяемая строка
+     * \param compiledPattern Указатель на начало односвязного списка с компилированным паттерном поиска
+     * \return true если строка удовлетворяет критериям поиска
      */
-    static bool IsEqual( char lSymbol, char rSymbol );
-
-    /*!
+	static bool Match(char *string, const int &string_length, size_t &offset, struct CPatternNode *compiledPattern);
+	
+	/*!
      * \brief Добавление узла в скомпилированный паттерн поиска (односвязанный список)
      * \param type Тип узла ('*', '?' или текст)
      * \param data Содержимое узла
@@ -92,16 +91,7 @@ private:
      * \param is_start Признак, должен ли паттерн быть жестко привязан к началу строки
      * \param is_end Признак, должен ли паттерн быть жестко привязан к концу строки
      */
-    void AddNode(type_t type, const char *data, const size_t dataSize, const bool isLeftAnchor, const bool isRightAnchor);
-
-    /*!
-     * \brief Функция проверки принадлежности строки поисковому паттерну
-     * \param string Проверяемая строка
-     * \param compiledPattern Указатель на начало односвязного списка с компилированным паттерном поиска
-     * \return true если строка удовлетворяет критериям поиска
-     */
-    static bool Match(char *string, struct CPatternNode *compiledPattern);
-
+	void AddNode(type_t type, const char *data, const size_t dataSize, const bool isLeftAnchor, const bool isRightAnchor);
 private:
     //! Гранулярность
     DWORD m_systemGran;
@@ -124,10 +114,22 @@ private:
     //! Смапированный регион
     LPVOID m_mapingRegion;
 
-    //! Первый элемент скомпилированного паттерна поиска
+	//! Первый элемент скомпилированного паттерна поиска
     CPatternNode* m_startPattern;
 
     //! Последний элемент скомпилированного паттерна поиска
     CPatternNode* m_endPattern;
+	
+	//! 
+	size_t m_stringOffset;
+
+
+	LARGE_INTEGER m_mapOffset;
+    LARGE_INTEGER m_mapSize;
+    DWORD m_bufferPosition;
+    int m_stringPosition;
+    LONGLONG m_mapDelta;
+    LONGLONG m_mapRegionSize;
+    LONGLONG m_availableBytes;
 };
 
