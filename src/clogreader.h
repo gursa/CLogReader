@@ -78,10 +78,9 @@ private:
 	/*!
      * \brief Функция проверки принадлежности строки поисковому паттерну
      * \param string Проверяемая строка
-     * \param compiledPattern Указатель на начало односвязного списка с компилированным паттерном поиска
      * \return true если строка удовлетворяет критериям поиска
      */
-	static bool Match(char *string, const int &string_length, size_t &offset, struct CPatternNode *compiledPattern);
+	bool Match(char *string);
 	
 	/*!
      * \brief Добавление узла в скомпилированный паттерн поиска (односвязанный список)
@@ -90,8 +89,16 @@ private:
      * \param text_length Размер содержимого
      * \param is_start Признак, должен ли паттерн быть жестко привязан к началу строки
      * \param is_end Признак, должен ли паттерн быть жестко привязан к концу строки
+	 * \return true в случае успеха
      */
-	void AddNode(type_t type, const char *data, const size_t dataSize, const bool isLeftAnchor, const bool isRightAnchor);
+	bool AddNode(type_t type, const char *data, const size_t dataSize, const bool isLeftAnchor, const bool isRightAnchor);
+
+	/*!
+     * \brief Отображение подробностей ошибок, вызванных функциями WinAPI
+     * \param methodName Имя метода CLogReader, в котором произошла ошибка
+     * \param functionName Имя функции, вызвавшей ошибку
+     */
+	void ErrorMsg(const char *methodName, const char *functionName);
 private:
     //! Гранулярность
     DWORD m_systemGran;
@@ -119,8 +126,14 @@ private:
 
     //! Последний элемент скомпилированного паттерна поиска
     CPatternNode* m_endPattern;
+
+	//! Текущий исследуемый элемент паттерна поиска
+	CPatternNode* m_itemPattern;
+
+	//! Указатель на найденную подстроку (ищем по элементу паттерна поиска) в исследуемой сроке
+	char *m_substrPtr;
 	
-	//! 
+	//! Смещение в исследуемой строке
 	size_t m_stringOffset;
 
 

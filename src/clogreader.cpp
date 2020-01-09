@@ -1,40 +1,6 @@
 #include "clogreader.h"
 #include <cstdio>
 
-namespace {
-
-// Отображение подробностей ошибок, вызванных функциями WinAPI
-void ErrorMsg(const char *methodName, const char *functionName)
-{
-    if((NULL == methodName) && (NULL == functionName)) {
-        fprintf(stderr, "\n[ERROR] %s(): Error in args! methodName = %p, functionName = %p\n",
-                __FUNCTION__, (void*)methodName, (void*)functionName);
-        return;
-    }
-
-    // Получение описания последней ошибки по ее коду
-    LPSTR messageBuffer;
-    DWORD errorCode = GetLastError();
-
-    if(!FormatMessageA(
-                FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
-                NULL,
-                errorCode,
-                MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
-                (LPSTR) &messageBuffer,
-                0,
-                NULL )) {
-        fprintf(stderr, "\n[ERROR] [%s()] %s() failed with error %lu\n", methodName, functionName, errorCode);
-        fprintf(stderr, "[ERROR] [%s()] %s() failed with error %lu\n", methodName, "FormatMessageA", GetLastError());
-    } else {
-        fprintf(stderr, "\n[ERROR] [%s()] %s() failed with error %lu: %s\n", methodName, functionName, errorCode, messageBuffer);
-    }
-
-    LocalFree(messageBuffer);
-}
-
-}
-
 CLogReader::CLogReader()
     : m_fileMapping( NULL ),
       m_searchFilter( NULL ),
@@ -43,6 +9,8 @@ CLogReader::CLogReader()
       m_mapingRegion( NULL ),
 	  m_startPattern( NULL ),
       m_endPattern( NULL ),
+	  m_itemPattern( NULL ),
+	  m_substrPtr( NULL ),
 	  m_stringOffset( 0 ),
 	  m_bufferPosition( 1 ),
 	  m_stringPosition( 0 ),
@@ -134,7 +102,7 @@ void CLogReader::Close()
 
 bool CLogReader::SetFilter( const char* filter )
 {
-    if(!filter) {
+    if(NULL == filter) {
         fprintf(stderr, "\n[ERROR] %s(): Error in args! filter = %p\n", __FUNCTION__, (void*)filter);
         Close();
 		return false;
@@ -157,14 +125,22 @@ bool CLogReader::SetFilter( const char* filter )
             if(m_bufferPosition) {
                 buffer[m_bufferPosition] = '\0';
                 m_bufferPosition = 0;
-                AddNode(typeText, buffer, strlen(buffer), isLeftAnchor, false);
+                if(!AddNode(typeText, buffer, strlen(buffer), isLeftAnchor, false))
+				{
+					Close();
+					return false;
+				}
                 isLeftAnchor = false;
             }
 
             // Далее добавляем узлы со спецсимволами
             if(nextFilterSymbol == '?')
             {
-                AddNode(typeQuestion, "?", strlen("?"), isLeftAnchor, isRightAnchor);
+                if(!AddNode(typeQuestion, "?", strlen("?"), isLeftAnchor, isRightAnchor))
+				{
+					Close();
+					return false;
+				}
                 // Флаги isLeftAnchor и isRightAnchor имеют смысл только для текста.
                 //Если попался хоть один спецсимвол, то уже точно нам это становится не важным для последующих узлов
                 isLeftAnchor = true;
@@ -174,7 +150,13 @@ bool CLogReader::SetFilter( const char* filter )
                 // Для звездочек добавляем только один раз если они идут подряд
                 // Иначе говоря схлопываем "******" до "*"
                 if((prevFilterSymbol != nextFilterSymbol))
-                    AddNode(typeAsterics, "*", strlen("*"), false, false);
+				{
+                    if(!AddNode(typeAsterics, "*", strlen("*"), false, false))
+					{
+						Close();
+						return false;
+					}
+				}
                 isLeftAnchor = false;
             }
 
@@ -189,10 +171,15 @@ bool CLogReader::SetFilter( const char* filter )
     }
 
     // Если по завершении цикла у нас еще остался необработанный текст, то дообрабатываем его
-    if(m_bufferPosition) {
+    if(m_bufferPosition)
+	{
         buffer[m_bufferPosition] = '\0';
         m_bufferPosition = 0;
-        AddNode(typeText, buffer, strlen(buffer), isLeftAnchor, true);
+        if(AddNode(typeText, buffer, strlen(buffer), isLeftAnchor, true))
+		{
+			Close();
+			return false;
+		}
         isLeftAnchor = false;
     }
 
@@ -259,8 +246,7 @@ bool CLogReader::GetNextLine( char* buf, const int bufsize )
         if( m_buffer[m_bufferPosition] == '\r' || m_buffer[m_bufferPosition] == '\n' )
         {			
             // Проверяем, подходит ли она нам
-            if(Match(buf, m_stringPosition, m_stringOffset, m_startPattern))
-			//if(m_regex.Match(buf))
+            if(Match(buf))
             {
 				m_fileOffset = m_fileOffset - m_mapRegionSize + m_bufferPosition + 1;
                 return true;
@@ -289,11 +275,24 @@ bool CLogReader::GetNextLine( char* buf, const int bufsize )
     return false;
 }
 
-void CLogReader::AddNode(type_t type, const char *data, const size_t dataSize, const bool isLeftAnchor, const bool isRightAnchor)
+bool CLogReader::AddNode(type_t type, const char *data, const size_t dataSize, const bool isLeftAnchor, const bool isRightAnchor)
 {
+	if(NULL == data)
+	{
+		fprintf(stderr, 
+			"\n[ERROR] %s(): Error in args! type = %d data = %p, dataSize = %d isLeftAnchor = %d isRightAnchor = %d\n", 
+			__FUNCTION__, type, data, dataSize, isLeftAnchor, isRightAnchor);
+        return false;
+	}
+	
 	// Добавляем очередной узел в односвязный список. Думаю, комменты излишни ...
     // malloc выбран в силу того, что он точно не бросит исключение ...
     CPatternNode *tempNode = (CPatternNode*) malloc( sizeof(CPatternNode) );
+	if(NULL == tempNode)
+	{
+		fprintf(stderr, "\n[ERROR] %s(): Failed to allocate memory for CPatternNode pointer\n", __FUNCTION__);        
+		return false;
+	}
     tempNode->type = type;
     tempNode->data = _strdup( data);
     tempNode->dataSize = dataSize;
@@ -311,42 +310,79 @@ void CLogReader::AddNode(type_t type, const char *data, const size_t dataSize, c
         m_endPattern->nextNode = tempNode;
         m_endPattern = m_endPattern->nextNode;
     }
+	return true;
 }
 
-bool CLogReader::Match(char *string, const int &string_length, size_t &offset, CPatternNode *itemPattern)
+bool CLogReader::Match(char *string)
 {
-	offset = 0;
-	char *find = NULL;
-    while(itemPattern != NULL) {
+	if(NULL == string)
+	{
+		fprintf(stderr, "\n[ERROR] %s(): Error in args! string = %p\n", __FUNCTION__, string);
+        return false;
+	}
+
+	m_itemPattern = m_startPattern;
+	m_stringOffset = 0;
+	m_substrPtr = NULL;
+    while(m_itemPattern != NULL) {
         // Если повстречали '*' - то работаем дальше, за исключением случая, когда узел последний
-        if(itemPattern->type == typeAsterics) {
-            itemPattern = itemPattern->nextNode;
-			if(!itemPattern) {
+        if(m_itemPattern->type == typeAsterics) {
+            m_itemPattern = m_itemPattern->nextNode;
+			if(!m_itemPattern) {
 				return true;
 			}
             continue;
-        } else if(itemPattern->type == typeQuestion) { // Если '?' - проверям что у нас нет выхода за границу
-            offset++;
-            if((offset > string_length) || (itemPattern->isRightAnchor && (offset != string_length)))
+        } else if(m_itemPattern->type == typeQuestion) { // Если '?' - проверям что у нас нет выхода за границу
+            m_stringOffset++;
+            if((m_stringOffset > m_stringPosition) || (m_itemPattern->isRightAnchor && (m_stringOffset != m_stringPosition)))
                 return false;
         } else { // если же у нас текст
             // то ищем его в строке
-			find = strstr(string + offset, itemPattern->data);
-            if(find == NULL)
+			m_substrPtr = strstr(string + m_stringOffset, m_itemPattern->data);
+            if(m_substrPtr == NULL)
                 return false;            
 
-            if(itemPattern->isLeftAnchor && (find != string + offset)) {
+            if(m_itemPattern->isLeftAnchor && (m_substrPtr != string + m_stringOffset)) {
                 return false;
             }
 
 			// Проверяем, где он находится в строке (соответствует ли он флагам)
-            offset=(find-string) + itemPattern->dataSize;
+            m_stringOffset=(m_substrPtr-string) + m_itemPattern->dataSize;
 
-            if(itemPattern->isRightAnchor && (offset != string_length)) {
+            if(m_itemPattern->isRightAnchor && (m_stringOffset != m_stringPosition)) {
                 return false;
             }
         }
-        itemPattern = itemPattern->nextNode;
+        m_itemPattern = m_itemPattern->nextNode;
     }
     return true;
+}
+
+void CLogReader::ErrorMsg(const char *methodName, const char *functionName)
+{
+    if((NULL == methodName) && (NULL == functionName)) {
+        fprintf(stderr, "\n[ERROR] %s(): Error in args! methodName = %p, functionName = %p\n",
+                __FUNCTION__, (void*)methodName, (void*)functionName);
+        return;
+    }
+
+    // Получение описания последней ошибки по ее коду
+    LPSTR messageBuffer;
+    DWORD errorCode = GetLastError();
+
+    if(!FormatMessageA(
+                FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS,
+                NULL,
+                errorCode,
+                MAKELANGID(LANG_ENGLISH, SUBLANG_ENGLISH_US),
+                (LPSTR) &messageBuffer,
+                0,
+                NULL )) {
+        fprintf(stderr, "\n[ERROR] [%s()] %s() failed with error %lu\n", methodName, functionName, errorCode);
+        fprintf(stderr, "[ERROR] [%s()] %s() failed with error %lu\n", methodName, "FormatMessageA", GetLastError());
+    } else {
+        fprintf(stderr, "\n[ERROR] [%s()] %s() failed with error %lu: %s\n", methodName, functionName, errorCode, messageBuffer);
+    }
+
+    LocalFree(messageBuffer);
 }
